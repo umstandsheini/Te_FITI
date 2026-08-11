@@ -1,0 +1,8 @@
+# niemals Secrets oder Footage einchecken
+__pycache__/
+*.pyc
+keys.json
+token_store.json*
+*.mp4
+*.telemetry.json
+*.part

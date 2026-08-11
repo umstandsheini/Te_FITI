@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Te_FITI</title>
+<script>(function(){
+  var t = localStorage.getItem("theme");
+  if(!t) t = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+  document.documentElement.dataset.theme = t;
+})();</script>
+<!-- Leaflet 1.9.4, shipped inside the add-on image: the viewer must not depend
+     on a CDN being reachable from the HA host (it used to block page parsing
+     on unpkg.com). Deferred so it does not block parsing, but still executes
+     before app.js — deferred scripts run in document order. -->
+<!-- ?v= must be bumped with the add-on version. index.html itself is served
+     no-store, so changing it here is what forces browsers onto the new assets;
+     0.7.2 shipped them with a long max-age and would otherwise keep serving
+     the previous app.js from cache for a day after an update. -->
+<link rel="stylesheet" href="static/leaflet.css?v=0.7.37"/>
+<script src="static/leaflet.js?v=0.7.37" defer></script>
+<link rel="stylesheet" href="static/style.css?v=0.7.37">
+</head>
+<body>
+<header>
+  <h1>Te_FITI</h1>
+  <span id="status">⏳ loading…</span>
+  <nav id="tabnav">
+    <button class="tabbtn active" data-view="clips">🎞️ Clips</button>
+    <button class="tabbtn" data-view="map">🗺️ Map</button>
+    <button class="tabbtn" data-view="analytics">📈 Analytics</button>
+  </nav>
+  <button class="iconbtn" id="themeToggle" title="Toggle light/dark theme"></button>
+  <button class="toolbtn" id="toolsbtn">🔑 Keys</button>
+</header>
+<div id="scanbar"></div>
+<main>
+  <section id="view-clips" class="view active">
+    <div id="filterbar">
+      <input type="text" id="search" placeholder="Filter: date/time…">
+      <div id="filterRow">
+        <label><input type="checkbox" id="filterDrive"> 📊 Driving</label>
+        <label><input type="checkbox" id="filterEvent"> 📅 Event</label>
+        <label><input type="checkbox" id="filterHonk"> 📯 Honk</label>
+        <select id="filterReason" title="Show only clips with this event reason">
+          <option value="">All reasons</option>
+        </select>
+        <span id="areaChip" class="chip" style="display:none"></span>
+        <span id="tripChip" class="chip" style="display:none"></span>
+        <span id="reasonChip" class="chip" style="display:none"></span>
+        <span id="resultCount" class="rescount"></span>
+        <button class="iconbtn" id="viewToggle" title="Switch between list and grid view"></button>
+      </div>
+    </div>
+    <div id="cliplist"></div>
+  </section>
+
+  <section id="view-map" class="view">
+    <div id="landingMap"></div>
+    <div id="mapToolbar">
+      <button id="drawRectBtn" title="Click, then drag a rectangle on the map. Shift+drag works without arming this first.">▭ Select area</button>
+      <span class="hint" id="drawHint">tip: shift+drag on the map</span>
+      <button id="filterResetBtn">↻ Reset</button>
+    </div>
+    <div id="areaResult" style="display:none"></div>
+    <div id="tripCard" style="display:none">
+      <div class="tcHead">
+        <button id="tripPrev" class="navbtn" title="Older trip">‹</button>
+        <div class="tcInfo">
+          <div class="tcVehicle" id="tcVehicle"></div>
+          <div class="tcRange" id="tcRange"></div>
+        </div>
+        <button id="tripNext" class="navbtn" title="Newer trip">›</button>
+      </div>
+      <div class="tcStats">
+        <span id="tcDist"></span>
+        <span id="tcClips"></span>
+        <span id="tcEvents"></span>
+      </div>
+      <button class="btn" id="tcViewClips">View clips</button>
+    </div>
+  </section>
+
+  <section id="view-analytics" class="view">
+    <div id="analyticsBody"><div class="loading">⏳ Loading analytics…</div></div>
+  </section>
+</main>
+
+<div class="player-overlay" id="playerOverlay">
+  <button class="playerClose" id="playerClose">✕ Close</button>
+  <section id="content">
+    <div id="meta"></div>
+    <div id="vctrl">
+      <span id="telctrl" style="display:none;align-items:center;gap:14px">
+        <label><input type="checkbox" id="t_hud" checked> HUD</label>
+        <label><input type="checkbox" id="t_nerd"> Nerd info</label>
+        <label><input type="checkbox" id="t_map"> 🗺️ Map</label>
+      </span>
+      <span id="telnone" style="display:none">— no telemetry in this clip</span>
+      <button class="vbtn" id="keepbtn" title="Protect this clip from the storage cleanup">📌 Keep</button>
+      <button class="vbtn" id="dlzip" title="Full clip (all cameras, decrypted) as ZIP">⬇ Clip (ZIP)</button>
+      <button class="vbtn" id="permdec" title="Permanently decrypt & save to NAS">💾 save permanently</button>
+      <span id="vmsg"></span>
+    </div>
+    <div id="placeholder">⬅ Select a clip from the list</div>
+    <div id="stage">
+      <div id="hud">
+        <div class="gear" id="h-gear">–</div>
+        <div class="arrow" id="h-l">⮜</div>
+        <div class="spd"><b id="h-spd">0</b><span>KM/H</span></div>
+        <div class="arrow" id="h-r">⮞</div>
+        <div class="accel-bar" id="h-accel" title="Accelerator"><div class="fill" id="h-accel-fill"></div></div>
+        <div class="ind brake" id="h-brake" title="Brake">●</div>
+        <div class="ind" id="h-ap" title="Autopilot">⊙</div>
+        <div class="ind" id="h-steer" title="Steering"><span class="wheel" id="h-wheel">⊕</span></div>
+      </div>
+      <div id="eventMark" style="display:none"></div>
+      <div id="stageaction"></div>
+      <div id="nerd"></div>
+    </div>
+    <div id="eventNav" style="display:none">
+      <button class="navbtn" id="evPrev" title="Previous segment of this event">‹</button>
+      <div id="evSegments"></div>
+      <button class="navbtn" id="evNext" title="Next segment of this event">›</button>
+    </div>
+    <div id="bar">
+      <button id="play">▶</button>
+      <input id="seek" type="range" min="0" max="1000" value="0">
+      <span id="time">0:00 / 0:00</span>
+      <select id="rate" title="Speed"><option>0.5</option><option selected>1</option><option>2</option><option>4</option></select>
+      <button id="full" title="Fullscreen">⛶</button>
+    </div>
+    <div id="map" style="display:none;height:240px;border:1px solid var(--line);border-radius:8px;overflow:hidden"></div>
+  </section>
+</div>
+
+<div id="tools">
+  <div class="box">
+    <span class="x" id="toolsx">✕</span>
+    <h2>Keys &amp; Decryption</h2>
+    <div class="sub" id="tstat"></div>
+    <div class="step">
+      <h3>A · Direkt-API (automatisch) <span class="pill" id="lpill">…</span></h3>
+      <div id="loginbox">
+        <p><b>1)</b> Open this link in a <b>regular browser tab</b> and log in to Tesla:</p>
+        <p><a class="btn" id="loginlink" href="#" target="_blank" rel="noopener">🔗 Open Tesla login</a> &nbsp;<span style="color:var(--muted);font-size:11px">(or copy URL below)</span></p>
+        <textarea readonly id="loginurl" rows="3" onclick="this.select()" style="width:100%;background:#0e1318;border:1px solid var(--line);color:var(--ok);border-radius:7px;padding:8px;font-family:monospace;font-size:11px;resize:vertical"></textarea>
+        <p><b>2)</b> After login you land on <code>dashcam.tesla.com/?code=…</code> — paste that URL here:</p>
+        <div class="row"><input type="text" id="cb" placeholder="https://dashcam.tesla.com/?code=…&state=…"><button class="btn" id="cbgo">Save token</button></div>
+      </div>
+      <div class="row"><button class="btn ghost" id="fetchbtn">Fetch all missing keys</button></div>
+      <div class="jobbar" id="fetchbar"></div>
+      <div id="lmsg"></div>
+    </div>
+    <div class="step">
+      <h3>B · Decrypt all clips permanently</h3>
+      <p>Decrypts every clip that has a key and writes it to the <code>decrypted/</code>
+         folder on your NAS, so it plays without any further work. <span id="decDeleteNote"></span></p>
+      <div class="row"><button class="btn" id="decryptbtn">🔓 Decrypt everything</button><button class="btn ghost" id="deccancel" style="display:none">✕ Cancel</button><span id="decmsg" style="color:var(--muted);font-size:12px"></span></div>
+      <div class="jobbar" id="decbar"></div>
+      <p id="cleanupInfo" style="margin-top:12px"></p>
+      <div class="row"><button class="btn ghost" id="cleanupbtn" style="display:none">🗑️ Delete originals of already-decrypted clips</button><span id="cleanupmsg" style="color:var(--muted);font-size:12px"></span></div>
+    </div>
+    <div class="step">
+      <h3>B2 · Undecryptable clips</h3>
+      <p id="quarantineInfo"></p>
+      <div class="row">
+        <button class="btn ghost" id="quarantinebtn" style="display:none">📦 Move them out of the way</button>
+        <button class="btn" id="brokenDeleteBtn" style="display:none;background:var(--bad);border-color:var(--bad)">🗑️ Delete permanently</button>
+        <span id="quarantinemsg" style="color:var(--muted);font-size:12px"></span>
+      </div>
+    </div>
+    <div class="step">
+      <h3>C · Batch thumbnail generation</h3>
+      <p>Generate thumbnails for every clip once, so they appear instantly instead of loading lazily while scrolling:</p>
+      <div class="row"><button class="btn" id="thumbsbtn">🖼️ Generate thumbnails</button><span id="thumbmsg" style="color:var(--muted);font-size:12px"></span></div>
+      <div class="jobbar" id="thumbbar"></div>
+    </div>
+    <div class="step">
+      <h3>E · Backfill telemetry for unencrypted clips</h3>
+      <p>Plain (unencrypted) clips only get their SEI telemetry (speed, gear, steering, …) extracted when opened in the viewer. Run this once to extract it for all existing plain clips that don't have it yet:</p>
+      <div class="row"><button class="btn" id="telbtn">🛰️ Extract all telemetry</button><button class="btn ghost" id="telcancel" style="display:none">✕ Cancel</button><span id="telmsg" style="color:var(--muted);font-size:12px"></span></div>
+      <div class="jobbar" id="telbar"></div>
+    </div>
+    <div class="step">
+      <h3>F · Fix telemetry sync</h3>
+      <p id="resyncInfo">A bug (fixed in 0.7.15) could make the telemetry HUD lag the video by up to 18 seconds
+         on clips where the car's telemetry stream stopped partway through recording — the HUD kept showing the
+         car still moving after it had visibly come to a stop. Existing clips keep their old, incorrectly-timed
+         data until re-extracted from the mp4 already on disk. Nothing is deleted and no clip is re-decrypted.</p>
+      <div class="row"><button class="btn ghost" id="resyncbtn" style="display:none">🩹 Fix telemetry sync</button><button class="btn ghost" id="resynccancel" style="display:none">✕ Cancel</button><span id="resyncmsg" style="color:var(--muted);font-size:12px"></span></div>
+      <div class="jobbar" id="resyncbar"></div>
+    </div>
+    <div class="step">
+      <h3>G · Free up storage — delete clips <span style="color:var(--bad);font-weight:400">(permanent)</span></h3>
+      <p>Delete whole clips by category to reclaim space. <b style="color:var(--bad)">This cannot be undone.</b>
+         Clips you marked with 📌 <b>keep</b> (in the player) are never deleted here.</p>
+      <div class="row" style="flex-wrap:wrap;gap:8px">
+        <select id="purgeCat" title="Which clips to delete">
+          <option value="no_event">Clips without an event</option>
+          <option value="event">Clips with any event</option>
+          <option value="reason">Clips with a specific event…</option>
+          <option value="all">All clips</option>
+        </select>
+        <select id="purgeReason" style="display:none" title="Event reason"></select>
+        <label style="font-size:12px;color:var(--muted)">older than
+          <input type="number" id="purgeDays" min="0" step="1" value="0" style="width:64px"> days
+          <span style="opacity:.7">(0 = any age)</span></label>
+      </div>
+      <div class="row" style="margin-top:6px">
+        <label style="font-size:12px;color:var(--muted)" title="Keeps the extracted GPS/speed track (a few KB per clip) even though the video is deleted">
+          <input type="checkbox" id="purgeKeepTel" checked> keep telemetry data (GPS/speed — negligible space)</label>
+      </div>
+      <div class="row" style="margin-top:8px"><button class="btn ghost" id="purgePreviewBtn">Preview</button>
+        <button class="btn" id="purgeBtn" style="display:none;background:var(--bad);border-color:var(--bad)">🗑️ Delete these clips</button>
+        <button class="btn ghost" id="purgeCancel" style="display:none">✕ Cancel</button>
+        <span id="purgeMsg" style="color:var(--muted);font-size:12px"></span></div>
+      <div class="jobbar" id="purgeBar"></div>
+    </div>
+    <div class="step">
+      <h3>D · Bookmarklet (fallback if API is blocked)</h3>
+      <p>1) <a class="btn" id="dljob" href="api/pending.json" download>pending_items.json</a> download.
+         2) Log in to <a class="btn ghost" href="https://dashcam.tesla.com" target="_blank" rel="noopener">dashcam.tesla.com</a>, run bookmarklet → downloads <code>keys.json</code>.
+         3) Upload here:</p>
+      <div class="row">
+        <a class="bm" id="bmlink" title="Drag to bookmarks bar">⬇ Tesla → FEKs</a>
+        <button class="btn ghost" id="copybm">Copy snippet</button>
+        <input type="file" id="keyfile" accept="application/json,.json">
+      </div>
+      <div id="msg"></div>
+    </div>
+  </div>
+</div>
+
+<script src="static/app.js?v=0.7.37" defer></script>
+</body>
+</html>

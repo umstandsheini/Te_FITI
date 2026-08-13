@@ -73,7 +73,8 @@ async function refreshStatus(){
     if(s.ready===false&&!$("#cliplist").querySelector(".cliprow")){
       $("#cliplist").innerHTML='<div class="loading">⏳ Building the clip index — the list appears as soon as it is done.</div>';
     }
-    $("#status").innerHTML=`🎞️ <b>${s.clips}</b> Clips · 🔒 <b>${s.encrypted}</b> · 🔑 <b>${s.keyed}</b> · ✅ <b>${s.decrypted}</b> · ⏳ no key <b>${s.need_keys}</b>`+(s.busy?" · running…":"");
+    const sizeBadge=s.total_bytes?` · 💾 <b>${fmtBytes(s.total_bytes)}</b>`:"";
+    $("#status").innerHTML=`🎞️ <b>${s.clips}</b> Clips${sizeBadge} · 🔒 <b>${s.encrypted}</b> · 🔑 <b>${s.keyed}</b> · ✅ <b>${s.decrypted}</b> · ⏳ no key <b>${s.need_keys}</b>`+(s.busy?" · running…":"");
     const li=s.login||{};
     const api=s.last_api||{};
     // A token file exists (li.logged_in) but the refresh may still be dead —
@@ -912,100 +913,139 @@ async function loadAnalytics(){
   }).join("");
   const monthHtml=months.length?`<h3>Clips by month</h3><svg viewBox="0 0 ${w} ${h}" style="width:100%;max-width:${w}px;height:${h}px">${bars}</svg>`:"";
 
-  // The GPX section renders into its own container so it can be filled
-  // asynchronously (it reads separate files on the NAS) without blocking the
-  // rest of analytics, and stays absent entirely when no trips exist.
-  el.innerHTML=tilesHtml+storageHtml+eventsHtml+monthHtml+'<div id="gpxSection"></div>';
+  // The trip detail section renders into its own container so it can be
+  // filled asynchronously (its map tiles/points load separately) without
+  // blocking the rest of analytics, and stays absent when there are no trips.
+  el.innerHTML=tilesHtml+storageHtml+eventsHtml+monthHtml+'<div id="tripDetailSection"></div>';
   el.querySelectorAll(".barRow[data-reason]").forEach(row=>{
     row.onclick=()=>{ viewReasonClips(row.dataset.reason); };
   });
-  loadGpxTrips();
+  loadTripDetailSection();
 }
 
-// ---------- GPX trip viewer (te_usbhub recordings) ----------
-let gpxMap=null, gpxLine=null, gpxTrips=[];
-// te_usbhub's GPX carries only lat/lon/time (no speed of its own — see
-// _derive_speeds_kmh in server.py), so speed is derived server-side per point
-// and shown here as a color gradient along the track. Fixed 0-150 km/h domain
-// (rather than each trip's own max) keeps a slow city drive and a highway run
-// visually comparable instead of both maxing out their own color scale.
-const GPX_SPEED_DOMAIN_KMH=150;
-const GPX_SPEED_STOPS=[[0,[59,130,246]],[0.33,[16,185,129]],[0.66,[250,204,21]],[1,[239,68,68]]];
-function gpxSpeedColor(kmh){
-  const t=Math.max(0,Math.min(1,kmh/GPX_SPEED_DOMAIN_KMH));
-  let i=0; while(i<GPX_SPEED_STOPS.length-2&&t>GPX_SPEED_STOPS[i+1][0]) i++;
-  const [t0,c0]=GPX_SPEED_STOPS[i], [t1,c1]=GPX_SPEED_STOPS[i+1];
+// ---------- Trip detail viewer ----------
+// Real per-frame video telemetry (speed/brake/autopilot/position) for every
+// clip that has it; GPX from te_usbhub fills in only the clip windows that
+// don't (locked/no_wrapped_key/not yet extracted) -- see _trip_route_full in
+// server.py. Reuses tripsSorted (already loaded for the Map tab's trip card)
+// as the trip picker list, so this needs no separate trip source of its own.
+let tripDetailMap=null, tripDetailLine=null;
+const SPEED_DOMAIN_KMH=150;   // fixed domain (not each trip's own max) keeps a
+                              // slow city drive and a highway run visually
+                              // comparable instead of both maxing their scale
+const SPEED_STOPS=[[0,[59,130,246]],[0.33,[16,185,129]],[0.66,[250,204,21]],[1,[239,68,68]]];
+function speedColor(kmh){
+  const t=Math.max(0,Math.min(1,(kmh||0)/SPEED_DOMAIN_KMH));
+  let i=0; while(i<SPEED_STOPS.length-2&&t>SPEED_STOPS[i+1][0]) i++;
+  const [t0,c0]=SPEED_STOPS[i], [t1,c1]=SPEED_STOPS[i+1];
   const f=(t-t0)/(t1-t0||1);
   const c=c0.map((v,k)=>Math.round(v+(c1[k]-v)*f));
   return `rgb(${c[0]},${c[1]},${c[2]})`;
 }
-function initGpxMap(){
-  if(gpxMap||!window.L) return gpxMap;
+function initTripDetailMap(){
+  if(tripDetailMap||!window.L) return tripDetailMap;
   try{
-    // preferCanvas: a trip can be 1000+ points, drawn as one polyline per
-    // segment so each can carry its own speed color — canvas rendering keeps
-    // that many paths smooth where the default SVG renderer would bog down.
-    gpxMap=L.map("gpxMap",{attributionControl:false,preferCanvas:true});
-    L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",{maxZoom:19,attribution:''}).addTo(gpxMap);
-    gpxMap.setView([51.16,10.45],5);
-  }catch(e){ console.error("GPX map init failed:", e); }
-  return gpxMap;
+    // preferCanvas: a trip can be hundreds of points, drawn as one polyline
+    // per segment so each can carry its own speed color — canvas rendering
+    // keeps that many paths smooth where SVG would bog down.
+    tripDetailMap=L.map("tripDetailMap",{attributionControl:false,preferCanvas:true});
+    L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",{maxZoom:19,attribution:''}).addTo(tripDetailMap);
+    tripDetailMap.setView([51.16,10.45],5);
+  }catch(e){ console.error("Trip detail map init failed:", e); }
+  return tripDetailMap;
 }
-async function loadGpxTrips(){
-  const sec=$("#gpxSection"); if(!sec) return;
-  let r;
-  try{ r=await fetch("api/gpx_trips").then(x=>x.json()); }catch(e){ return; }
-  // Hide the whole section unless the feature is configured AND has trips.
-  if(!r||!r.enabled||!r.trips||!r.trips.length){ sec.innerHTML=""; return; }
-  gpxTrips=r.trips;
-  const total=gpxTrips.reduce((s,t)=>s+(t.distance_km||0),0);
-  const opts=gpxTrips.map((t,i)=>{
-    const km=t.distance_km!=null?` · ${t.distance_km} km`:"";
-    return `<option value="${t.id}">${gpxLabel(t)}${km}</option>`;
-  }).join("");
-  const grad=GPX_SPEED_STOPS.map(([t,c])=>`rgb(${c[0]},${c[1]},${c[2]}) ${t*100}%`).join(",");
-  sec.innerHTML=`<h3>Recorded drives (GPX) <small style="color:var(--muted);font-weight:400">`
-    +`${gpxTrips.length} trip${gpxTrips.length===1?"":"s"} · ${total.toFixed(1)} km total</small></h3>`
-    +`<div class="row" style="margin-bottom:8px"><select id="gpxPick">${opts}</select>`
-    +`<span id="gpxInfo" style="color:var(--muted);font-size:12px"></span></div>`
-    +`<div id="gpxMap" style="height:320px;border:1px solid var(--line);border-radius:8px;overflow:hidden"></div>`
+function loadTripDetailSection(){
+  const sec=$("#tripDetailSection"); if(!sec) return;
+  // tripsSorted has one entry per contiguous clip cluster -- most parked
+  // Sentry wake-ups (see the earlier RecentClips loop-recording discussion)
+  // never move, so they're 0 km "trips" that would otherwise flood this
+  // picker. Only actual drives belong here; the Map tab's trip card still
+  // uses the full unfiltered tripsSorted for its own browsing purpose.
+  const driven=tripsSorted.filter(t=>t.distance_km>0);
+  if(!driven.length){ sec.innerHTML=""; return; }
+  const total=driven.reduce((s,t)=>s+(t.distance_km||0),0);
+  const opts=driven.map(t=>`<option value="${t.id}">${tripLabel(t)} · ${t.distance_km} km</option>`).join("");
+  const grad=SPEED_STOPS.map(([t,c])=>`rgb(${c[0]},${c[1]},${c[2]}) ${t*100}%`).join(",");
+  sec.innerHTML=`<h3>Trip detail <small style="color:var(--muted);font-weight:400">`
+    +`${driven.length} trip${driven.length===1?"":"s"} · ${total.toFixed(1)} km total</small></h3>`
+    +`<div class="row" style="margin-bottom:8px;flex-wrap:wrap"><select id="tripDetailPick">${opts}</select>`
+    +`<button class="btn ghost" id="tripDetailViewClips">🎞️ View clips</button>`
+    +`<span id="tripDetailInfo" style="color:var(--muted);font-size:12px"></span></div>`
+    +`<div id="tripDetailMap" style="height:320px;border:1px solid var(--line);border-radius:8px;overflow:hidden"></div>`
     +`<div class="row" style="margin-top:6px;gap:8px;align-items:center;font-size:11px;color:var(--muted)">`
     +`<span>Speed</span><span>0</span>`
     +`<div style="flex:1;height:8px;border-radius:4px;background:linear-gradient(90deg,${grad})"></div>`
-    +`<span>${GPX_SPEED_DOMAIN_KMH}+ km/h</span></div>`;
-  $("#gpxPick").onchange=e=>showGpxTrip(e.target.value);
-  setTimeout(()=>{ initGpxMap(); if(gpxMap){ gpxMap.invalidateSize(); showGpxTrip(gpxTrips[0].id); } },60);
+    +`<span>${SPEED_DOMAIN_KMH}+ km/h</span></div>`
+    +`<div id="tripDetailChart" style="margin-top:10px"></div>`
+    +`<div id="tripDetailStats" class="statGrid" style="margin-top:10px"></div>`;
+  $("#tripDetailPick").onchange=e=>showTripDetail(e.target.value);
+  $("#tripDetailViewClips").onclick=()=>{
+    const t=driven.find(x=>x.id===$("#tripDetailPick").value); if(!t) return;
+    tripFilter=new Set(t.clip_ids);
+    buildSidebar();
+    switchView("clips");
+  };
+  setTimeout(()=>{ initTripDetailMap(); if(tripDetailMap){ tripDetailMap.invalidateSize(); showTripDetail(driven[0].id); } },60);
 }
-// A trip id is an ISO-ish "2026-07-29T18-37-29"; show it as a readable date.
-function gpxLabel(t){
-  const m=/^(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})$/.exec(t.id);
-  if(m) return `${m[3]}.${m[2]}.${m[1]} ${m[4]}:${m[5]}`;
-  return t.name||t.id;
+function tripLabel(t){
+  return (t.vehicle?t.vehicle+" · ":"")+fmtTs(t.start)+" – "+t.end.slice(11).replace(/-/g,":");
 }
-async function showGpxTrip(id){
-  if(!gpxMap) return;
+async function showTripDetail(id){
+  if(!tripDetailMap) return;
+  $("#tripDetailInfo").textContent="Loading…";
   let g;
-  try{ g=await fetch("api/gpx?id="+encodeURIComponent(id)).then(x=>x.json()); }catch(e){ return; }
-  if(!g||!g.track||!g.track.length){ $("#gpxInfo").textContent="No track points."; return; }
-  // A LayerGroup holds the segments plus the start/end dots — a polyline is
-  // not a container, so they can't be added to it directly.
-  if(gpxLine) gpxMap.removeLayer(gpxLine);
-  gpxLine=L.layerGroup().addTo(gpxMap);
-  // Leaflet has no per-vertex color on a single polyline, so each [lat,lon,
-  // speed] segment gets its own tiny 2-point line, colored by its speed.
-  const track=g.track;
-  for(let i=0;i<track.length-1;i++){
-    const a=track[i], b=track[i+1];
-    L.polyline([[a[0],a[1]],[b[0],b[1]]],
-      {color:gpxSpeedColor((a[2]+b[2])/2),weight:4,opacity:0.9}).addTo(gpxLine);
+  try{ g=await fetch("api/trip_detail?id="+encodeURIComponent(id)).then(x=>x.json()); }catch(e){ return; }
+  if(!g||!g.points||!g.points.length){ $("#tripDetailInfo").textContent="No track points."; $("#tripDetailChart").innerHTML=""; $("#tripDetailStats").innerHTML=""; return; }
+  if(tripDetailLine) tripDetailMap.removeLayer(tripDetailLine);
+  tripDetailLine=L.layerGroup().addTo(tripDetailMap);
+  const pts=g.points;
+  // Leaflet has no per-vertex color on a single polyline, so each
+  // [t, lat, lon, speed] segment gets its own tiny 2-point line.
+  for(let i=0;i<pts.length-1;i++){
+    const a=pts[i], b=pts[i+1];
+    L.polyline([[a[1],a[2]],[b[1],b[2]]],
+      {color:speedColor(((a[3]||0)+(b[3]||0))/2),weight:4,opacity:0.9}).addTo(tripDetailLine);
   }
-  // green = start, red = end, so the direction is readable
-  L.circleMarker([track[0][0],track[0][1]],{radius:5,color:"#fff",weight:2,fillColor:"#34d399",fillOpacity:1}).addTo(gpxLine);
-  L.circleMarker([track[track.length-1][0],track[track.length-1][1]],{radius:5,color:"#fff",weight:2,fillColor:"#f87171",fillOpacity:1}).addTo(gpxLine);
-  if(g.bounds) gpxMap.fitBounds([[g.bounds.min_lat,g.bounds.min_lon],[g.bounds.max_lat,g.bounds.max_lon]],{padding:[30,30],maxZoom:16});
+  L.circleMarker([pts[0][1],pts[0][2]],{radius:5,color:"#fff",weight:2,fillColor:"#34d399",fillOpacity:1}).addTo(tripDetailLine);
+  L.circleMarker([pts[pts.length-1][1],pts[pts.length-1][2]],{radius:5,color:"#fff",weight:2,fillColor:"#f87171",fillOpacity:1}).addTo(tripDetailLine);
+  (g.events||[]).forEach(ev=>{
+    L.marker([ev.lat,ev.lon],{icon:reasonIcon(ev.reason,1)})
+      .bindTooltip(REASON_LABELS[ev.reason]||ev.reason||"Event")
+      .addTo(tripDetailLine)
+      .on("click",()=>openClipById(ev.clip_id));
+  });
+  // Braking markers were tried on the map and turned out to be too much
+  // visual noise alongside the event markers and the already-colored route
+  // -- the count/hard-count in the stats tile below carries the same info
+  // without cluttering the map.
+  if(g.bounds) tripDetailMap.fitBounds([[g.bounds.min_lat,g.bounds.min_lon],[g.bounds.max_lat,g.bounds.max_lon]],{padding:[30,30],maxZoom:16});
   const dur=gpxDuration(g.start,g.end);
-  const speeds=(g.avg_speed_kmh!=null?` · ⌀ ${g.avg_speed_kmh} km/h`:"")+(g.max_speed_kmh!=null?` · ↑ ${g.max_speed_kmh} km/h`:"");
-  $("#gpxInfo").textContent=`${g.point_count} points · ${g.distance_km} km`+(dur?` · ${dur}`:"")+speeds;
+  $("#tripDetailInfo").textContent=`${g.point_count} points · ${g.distance_km} km`+(dur?` · ${dur}`:"")
+    +(g.gpx_gap_points?` · ${g.gpx_gap_points} from GPX (no video telemetry)`:"");
+  $("#tripDetailChart").innerHTML=speedChartSvg(pts);
+  const stats=[
+    ["⌀ Speed",g.avg_speed_kmh!=null?g.avg_speed_kmh+" km/h":"–"],
+    ["↑ Max speed",g.max_speed_kmh!=null?g.max_speed_kmh+" km/h":"–"],
+    ["🅿️ Autopilot",g.autopilot_pct!=null?g.autopilot_pct+"%":"–"],
+    ["🛑 Braking events",g.braking_events+(g.hard_braking_events?` (${g.hard_braking_events} hard)`:"")],
+  ];
+  $("#tripDetailStats").innerHTML=stats.map(([l,v])=>`<div class="statTile"><div class="stNum">${v}</div><div class="stLbl">${l}</div></div>`).join("");
+}
+// Simple inline speed-over-time line chart -- same SVG-string approach as the
+// "Clips by month" bar chart above, no charting library needed for one line.
+function speedChartSvg(pts){
+  const speeds=pts.map(p=>p[3]||0);
+  const max=Math.max(10,...speeds);
+  const w=Math.max(200,Math.min(900,pts.length*2)), h=90, pad=4;
+  const step=(w-pad*2)/Math.max(1,pts.length-1);
+  const path=speeds.map((s,i)=>`${i===0?"M":"L"}${(pad+i*step).toFixed(1)},${(h-pad-(s/max)*(h-pad*2)).toFixed(1)}`).join(" ");
+  return `<div style="font-size:11px;color:var(--muted);margin-bottom:2px">Speed over time (max ${Math.round(max)} km/h)</div>`
+    +`<svg viewBox="0 0 ${w} ${h}" style="width:100%;max-width:${w}px;height:${h}px">`
+    +`<path d="${path}" fill="none" stroke="var(--accent)" stroke-width="1.5"/></svg>`;
+}
+function openClipById(cid){
+  const c=allClips.find(x=>x.id===cid);
+  if(c) openPlayerOverlay(c);
 }
 function gpxDuration(a,b){
   if(!a||!b) return "";
@@ -1481,7 +1521,16 @@ async function boot(){
 
   // No initLandingMap() here — switchView("map") builds it on first use, so
   // boot does not pull map tiles for a tab that may never be opened.
-  try { await refreshStatus(); } catch(e){ console.error("status failed:", e); }
+  try {
+    const s=await refreshStatus();
+    // Sync the purge dialog's checkbox to the add-on's configured default,
+    // once, here at boot only -- refreshStatus() itself polls every few
+    // seconds and must never touch this again, or it would stomp on a
+    // manual toggle mid-session.
+    if(s&&typeof s.keep_telemetry_default==="boolean"){
+      const cb=$("#purgeKeepTel"); if(cb) cb.checked=s.keep_telemetry_default;
+    }
+  } catch(e){ console.error("status failed:", e); }
   clearTimeout(slowHint);
   await loadClips(false);
   try { await loadTrips(); } catch(e){ console.error("trips failed:", e); }

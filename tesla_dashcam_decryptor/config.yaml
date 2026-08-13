@@ -1,5 +1,5 @@
 name: Te_FITI
-version: "0.7.37"
+version: "0.7.43"
 slug: te_fiti
 description: >-
   Multi-camera Tesla dashcam viewer for Home Assistant with telemetry HUD,
@@ -32,8 +32,13 @@ options:
   interval_seconds: 300
   auto_decrypt: true
   enable_direct_api: true
+  auto_fetch_keys: true
+  auto_generate_thumbnails: true
+  auto_extract_telemetry: true
+  auto_purge_driving_older_than_days: 0
+  keep_telemetry_on_delete: true
   key_after_decrypt: hidden
-  delete_originals: false
+  delete_originals: true
   debug_logging: false
 schema:
   smb_host: str
@@ -50,6 +55,11 @@ schema:
   interval_seconds: int(0,)
   auto_decrypt: bool
   enable_direct_api: bool
+  auto_fetch_keys: bool
+  auto_generate_thumbnails: bool
+  auto_extract_telemetry: bool
+  auto_purge_driving_older_than_days: int(0,)
+  keep_telemetry_on_delete: bool
   key_after_decrypt: list(hidden|embed)
   delete_originals: bool
   debug_logging: bool

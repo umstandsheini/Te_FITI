@@ -17,6 +17,16 @@ INTERVAL=$(bashio::config 'interval_seconds')
 DELETE=$(bashio::config 'delete_originals')
 AUTO=$(bashio::config 'auto_decrypt')
 DIRECT=$(bashio::config 'enable_direct_api')
+AUTOKEYS="true"
+if bashio::config.has_value 'auto_fetch_keys'; then AUTOKEYS=$(bashio::config 'auto_fetch_keys'); fi
+AUTOTHUMBS="true"
+if bashio::config.has_value 'auto_generate_thumbnails'; then AUTOTHUMBS=$(bashio::config 'auto_generate_thumbnails'); fi
+AUTOTEL="true"
+if bashio::config.has_value 'auto_extract_telemetry'; then AUTOTEL=$(bashio::config 'auto_extract_telemetry'); fi
+PURGEDAYS="0"
+if bashio::config.has_value 'auto_purge_driving_older_than_days'; then PURGEDAYS=$(bashio::config 'auto_purge_driving_older_than_days'); fi
+KEEPTEL="true"
+if bashio::config.has_value 'keep_telemetry_on_delete'; then KEEPTEL=$(bashio::config 'keep_telemetry_on_delete'); fi
 KEYMODE=$(bashio::config 'key_after_decrypt')
 DEBUG=$(bashio::config 'debug_logging')
 VERS="3.0"
@@ -63,11 +73,17 @@ bashio::log.info "Scan  : ${SCAN}"
 bashio::log.info "Source: ${SRC} (encrypted files auto-detected by header)"
 bashio::log.info "Target: ${OUT}   Keys: ${SRC}/.teslacam_keys.json"
 bashio::log.info "auto_decrypt=${AUTO} direct_api=${DIRECT} key_after_decrypt=${KEYMODE} delete_originals=${DELETE}"
+bashio::log.info "auto_fetch_keys=${AUTOKEYS} auto_generate_thumbnails=${AUTOTHUMBS} auto_extract_telemetry=${AUTOTEL} auto_purge_driving_older_than_days=${PURGEDAYS} keep_telemetry_on_delete=${KEEPTEL}"
 
 FLAGS=""
 [ "${DELETE}" = "true" ] && FLAGS="${FLAGS} --delete"
 [ "${AUTO}" != "true" ] && FLAGS="${FLAGS} --no-auto-decrypt"
 [ "${DIRECT}" != "true" ] && FLAGS="${FLAGS} --no-direct-api"
+[ "${AUTOKEYS}" != "true" ] && FLAGS="${FLAGS} --no-auto-fetch-keys"
+[ "${AUTOTHUMBS}" != "true" ] && FLAGS="${FLAGS} --no-auto-thumbnails"
+[ "${AUTOTEL}" != "true" ] && FLAGS="${FLAGS} --no-auto-telemetry"
+[ "${PURGEDAYS}" != "0" ] && FLAGS="${FLAGS} --auto-purge-days ${PURGEDAYS}"
+[ "${KEEPTEL}" != "true" ] && FLAGS="${FLAGS} --no-keep-telemetry-on-delete"
 [ "${KEYMODE}" = "embed" ] && FLAGS="${FLAGS} --embed-key"
 [ "${DEBUG}" = "true" ] && FLAGS="${FLAGS} --debug"
 

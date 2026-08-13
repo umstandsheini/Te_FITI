@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.7.43
+- **"View clips" button in the Analytics trip detail viewer.** Selecting a trip and clicking it filters the clip list to exactly that trip's clips and jumps to the Clips tab — the same filter the Map tab's trip card already offers, now available from Analytics too
+
+## 0.7.42
+- **Fix: the Analytics trip picker listed stationary clusters as "trips."** Most parked Sentry wake-ups never move (0 km), and with 476 total clusters vs. only 68 actual drives, they dominated the dropdown. Now filtered to `distance_km > 0`, matching the "68 driven" figure the stats tile already showed. The Map tab's trip card is unaffected — it still browses every cluster, moving or not, which is its own separate purpose
+
+## 0.7.41
+- **Fix: the trip detail viewer's braking markers cluttered the map.** Removed from the map (alongside the route and event markers it was too much); the braking-event count (with hard-brake count) stays in the stats tile below the map
+
+## 0.7.40
+- **New trip detail viewer, replacing the GPX viewer in Analytics.** The dashcam's own video telemetry (SEI data — real per-frame speed, brake, Autopilot state, position) is a far richer source than GPX ever was, and Analytics' "Trips" already used it for route/distance. The map view didn't, though: it showed te_usbhub's separately-recorded GPX tracks with a *derived* speed estimate, a completely independent trip list from the clip-based one. Both are now unified — video telemetry is the primary and, wherever it exists, only source; GPX fills in exclusively the clip windows that have none of their own (an undecryptable clip, or one not extracted yet), so it works fine without `trips_subpath` configured at all
+  - Speed-colored route (real vehicle speed, not position-derived)
+  - Speed-over-time chart
+  - Event markers plotted at their actual position along the route
+  - Braking-event markers, flagged "hard" past a ~10 km/h/s speed-drop threshold (an approximation — there's no direct deceleration sensor, only the brake on/off flag and real speed samples)
+  - Average/max speed and % of the trip spent on Autopilot
+  - New `/api/trip_detail?id=` endpoint; `/api/gpx_trips` and `/api/gpx` are removed (no longer used by anything)
+- Verified against the real ~4100-clip DEV library: a 31.7 km highway trip correctly pulled 211 of 16994 points from GPX for clip windows with no video telemetry (81.6% Autopilot, 0 hard brakes — consistent with a highway cruise); a 5 km city trip needed no GPX fallback at all (21.5 km/h avg, 15 braking events, 1 hard)
+
+## 0.7.39
+- **New `keep_telemetry_on_delete` option** (default on): a single, explicit setting for whether the GPS/speed telemetry sidecar survives when a video is deleted, applied consistently everywhere a video can be deleted — the manual purge dialog's "keep telemetry data" checkbox (already defaulted on, now syncs its default from this option instead of a static HTML attribute) and the new automatic age-based purge (0.7.38), which previously had this hardcoded to always-on with no way to turn it off
+
+## 0.7.38
+- **Keys, thumbnails and telemetry are now processed automatically in the background**, on by default, each independently toggleable in add-on options:
+  - `auto_fetch_keys` (default on): keys for a newly-discovered encrypted file are now fetched the moment the file shows up in a scan, not just on the next periodic cycle (up to `interval_seconds` away). Tracks which files were locked as of the last scan and only re-triggers a fetch when something genuinely new appears, so a quiet library costs nothing extra
+  - `auto_generate_thumbnails` / `auto_extract_telemetry` (default on): the existing manual "Generate thumbnails" / "Extract all telemetry" batch jobs now also run on every scheduler cycle, so new clips get both without visiting the Keys panel
+  - `auto_purge_driving_older_than_days` (default **off** — 0): optionally delete driving footage (no Sentry/Saved event) automatically once it's older than N days. Telemetry sidecars are always kept, so trip distance/route history in Analytics survives even after the video is gone. Event clips are never touched by this, only by an explicit manual purge
+- **`delete_originals` now defaults to on.** Once a clip decrypts, the encrypted original is redundant — the decrypted copy is the one actually used. Existing installations are unaffected unless the option was never touched in the add-on's own configuration (Home Assistant remembers whatever was explicitly set, independent of this default); new installs get space-saving behavior out of the box
+- **The clip list header now shows total storage used** across every file, next to the clip count. Reuses the same per-folder byte totals Analytics already computes (cached, not recomputed on every status poll)
+
 ## 0.7.37
 - **RecentClips loop-recording now groups in the list, same as events.** A driving trip or a parked Sentry wake-up writes one clip per minute, and on a day with several of those the list turned into dozens of near-identical rows in a row — much worse than the event clutter 0.7.33 already fixed, since RecentClips has no shared event.json to key off. Consecutive same-folder clips no more than 90s apart (comfortably above the ~60s segment cadence, comfortably below the gap that means the car actually went back to sleep) now collapse into one "▸ N" row, same collapse/expand interaction as event groups. Opening any clip from inside a collapsed recording also gets the cross-segment player strip (prev/next, jump to any minute, auto-advance at the end) that was previously event-only — a multi-minute drive or a long Sentry wake-up now browses exactly like a multi-segment event does
 - Verified against real DEV data: the 3-clip idle burst and 9-clip drive/wake-up blocks from today's library each collapsed correctly, expanding showed every segment, and jumping between segments in the player worked (verified via the 17:27–17:29 clips discussed with the user directly)

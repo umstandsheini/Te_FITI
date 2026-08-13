@@ -35,9 +35,10 @@ ffmpeg at the event timestamp (event.json) or ~1 s and caches it.
   POST /api/purge             delete clips by category (batch; protected clips spared,
                                keep_telemetry=1 keeps the tiny GPS/speed sidecar files)
   POST /api/protect           {id, protected} -> mark/unmark a clip as keep-forever
-  GET  /api/gpx_trips         GPX trips synced from te_usbhub (list + summary), if configured
-  GET  /api/gpx?id=           one GPX trip's track points + summary for the viewer
   GET  /api/trips             clips grouped into trips (contiguous drives per vehicle)
+  GET  /api/trip_detail?id=   one trip's merged route (real video telemetry; GPX from
+                               te_usbhub fills only clip windows with none of their own),
+                               event/braking markers, speed & autopilot stats
   GET  /api/analytics         storage/clip/trip/event stats (cached 60s)
   POST /api/keys              FEKs (bookmarklet) -> store
   GET  /api/pending.json      items (without key) for the bookmarklet
@@ -67,6 +68,16 @@ DELETE = False
 AUTO_DECRYPT = False
 EMBED_KEY = False
 DIRECT_API = True
+AUTO_FETCH_KEYS = True
+AUTO_THUMBNAILS = True
+AUTO_TELEMETRY = True
+AUTO_PURGE_DAYS = 0   # 0 = disabled; unlike the other auto_* toggles this one
+                      # deletes footage outright, so it defaults off rather
+                      # than on -- the user has to pick an age threshold
+KEEP_TELEMETRY_ON_DELETE = True   # default for every video-deleting path
+                                   # (manual purge checkbox, automatic purge):
+                                   # the GPS/speed sidecar (a few KB) survives
+                                   # even after the video itself is gone
 DEBUG = False
 LIST_TTL = 120
 TRIP_GAP_MIN = 20     # minutes of inactivity that ends a trip
@@ -87,6 +98,13 @@ _prep_locks = {}
 _prep_guard = threading.Lock()
 _lcache = {"t": 0.0, "data": None}
 _lcache_guard = threading.Lock()
+# Camera-files seen as "locked" (encrypted, no key yet) as of the last scan --
+# compared against on every new scan so a newly-discovered locked file can
+# trigger an immediate key fetch instead of waiting for the next scheduler
+# tick. Deliberately just the current set, not a running union: a file drops
+# out once it's no longer locked, so it would count as "new" again if it ever
+# somehow reappeared, which is the correct behaviour either way.
+_known_locked_srs = set()
 _thumb_job = {"running": False, "done": 0, "total": 0}
 _thumb_guard = threading.Lock()
 _tel_job = {"running": False, "done": 0, "total": 0, "mode": "", "skipped": 0}
@@ -656,6 +674,20 @@ def _scan_locked(keys=None):
         _scan_job.update({"running": False, "phase": "", "took": time.time() - t0})
 
 
+def _new_locked_srs(data):
+    """Which camera-files are 'locked' (encrypted, no key yet) now but weren't
+    as of the last scan. Pure in-memory comparison against already-scanned
+    state -- no extra NAS access -- so it's cheap enough to run on every scan,
+    unlike pending_key_items() itself (a real header read per candidate)."""
+    global _known_locked_srs
+    current = {_sr_of_cam(c["folder"], c["timestamp"], cam)
+               for c in data for cam, info in c["cameras"].items()
+               if info["state"] == "locked"}
+    new = current - _known_locked_srs
+    _known_locked_srs = current
+    return new
+
+
 def _rescan_async(warm_derived=False):
     """Refresh the clip list in the background, one scan at a time. Requests are
     never blocked by a scan — they get the previous list until this finishes.
@@ -693,17 +725,21 @@ def _rescan_async(warm_derived=False):
                       f"pre-building trips and analytics", flush=True)
                 trips_cached()
                 analytics_cached()
-                # Fetch keys for any clip locked at start-up right away, rather
-                # than leaving it up to the scheduler's next tick (up to
-                # interval_seconds later). After a restart with new footage that
-                # delay looked like "key fetch isn't working": logged in, keys
-                # missing, nothing happening. The scheduler's first tick fires
-                # before this scan finishes, so without this the first real
-                # fetch could be a full interval away.
-                if DIRECT_API and any(info["state"] == "locked"
-                                      for c in data for info in c["cameras"].values()):
-                    print("[warmup] locked clips present, fetching keys now", flush=True)
-                    bg(run_cycle, do_fetch=True, do_decrypt=AUTO_DECRYPT)
+            if data:
+                # Fetch keys the moment a new encrypted-but-keyless file shows
+                # up, rather than leaving it up to the scheduler's next tick
+                # (up to interval_seconds later). Runs on every scan, not just
+                # start-up warm-up: _new_locked_srs is a plain comparison
+                # against already-scanned state, so on a quiet library where
+                # nothing changed it's a no-op every time, and only actually
+                # triggers a fetch (and its real per-candidate header reads)
+                # when something genuinely new appears.
+                if DIRECT_API and AUTO_FETCH_KEYS:
+                    new_locked = _new_locked_srs(data)
+                    if new_locked:
+                        print(f"[scan] {len(new_locked)} newly discovered file(s) "
+                              f"without a key — fetching now", flush=True)
+                        bg(run_cycle, do_fetch=True, do_decrypt=AUTO_DECRYPT)
         except Exception as e:
             print("[scan]", e, flush=True)
         finally:
@@ -2025,6 +2061,21 @@ def run_cycle(do_fetch=True, do_decrypt=None):
             r = ensure_all()
             if r["decrypted"]:
                 print(f"[decrypt] {r}", flush=True)
+        # Thumbnails/telemetry need no Tesla contact, so these run every cycle
+        # regardless of do_fetch/DIRECT_API -- launched in the background
+        # rather than inline, since gen_all_thumbs/gen_all_telemetry have
+        # their own single-flight guards and shouldn't hold _lock (and thus
+        # block the next scheduled cycle) for however long a full pass takes.
+        if AUTO_THUMBNAILS:
+            bg(gen_all_thumbs)
+        if AUTO_TELEMETRY:
+            bg(gen_all_telemetry)
+        if AUTO_PURGE_DAYS > 0:
+            # Driving footage only (category "no_event") -- Sentry/Saved clips
+            # are never touched by the automatic sweep, only by an explicit
+            # manual purge.
+            bg(purge_clips, {"category": "no_event", "older_than_days": AUTO_PURGE_DAYS,
+                             "keep_telemetry": KEEP_TELEMETRY_ON_DELETE})
     finally:
         _busy = False
         _lock.release()
@@ -2052,12 +2103,6 @@ _TRKPT_RE = re.compile(
 _GPXNAME_RE = re.compile(r"<name>([^<]*)</name>", re.I)
 _gpx_cache = {}          # id -> {"mtime","size","name","points","distance_km","bounds","start","end"}
 _gpx_guard = threading.Lock()
-
-
-def _gpx_id_ok(tid):
-    """A trip id is a bare filename stem — reject anything that could escape
-    TRIPS_DIR (path separators, '..')."""
-    return bool(tid) and tid == os.path.basename(tid) and tid not in (".", "..")
 
 
 def _gpx_path(tid):
@@ -2125,6 +2170,7 @@ def _parse_gpx(text):
     return {"name": nm.group(1).strip() if nm else "",
             # [lat, lon, speed_kmh] triples so the map can color each segment
             "points": [[p[0], p[1], round(s, 1)] for p, s in zip(pts, speeds)],
+            "times": times,  # parallel to points; used to window-match against clips
             "point_count": len(pts),
             "distance_km": round(dist, 2), "bounds": bounds,
             "start": start, "end": end,
@@ -2183,22 +2229,153 @@ def list_gpx_trips():
     return out
 
 
-def gpx_track(tid):
-    """Full track (points + summary) for one trip, for the map viewer."""
-    if not TRIPS_DIR or not _gpx_id_ok(tid):
-        return None
-    path = _gpx_path(tid)
-    if not os.path.isfile(path):
+
+# ---------- Trip detail (video telemetry, GPX only fills real gaps) ----------
+def _gpx_dt_naive(t):
+    """Parse a GPX <time> string as a naive *local* datetime, ignoring any
+    trailing 'Z'. te_usbhub's writer (blackbox.py) stamps points with
+    time.strftime() -- no tzinfo, i.e. the Pi's local wall-clock, same as the
+    car -- and only appends 'Z' for GPX spec compliance; the value was never
+    actually UTC. Clip filenames are that same local wall-clock, so comparing
+    both as naive local times is what actually lines up; treating the 'Z' as
+    genuine UTC would introduce a fake offset between the two."""
+    if not t:
         return None
     try:
-        text = open(path, encoding="utf-8", errors="replace").read()
-    except OSError:
+        return datetime.datetime.fromisoformat(t.rstrip("Zz"))
+    except ValueError:
         return None
-    p = _parse_gpx(text)
-    return {"id": tid, "name": p["name"], "track": p["points"],
-            "point_count": p["point_count"], "distance_km": p["distance_km"],
-            "bounds": p["bounds"], "start": p["start"], "end": p["end"],
-            "avg_speed_kmh": p["avg_speed_kmh"], "max_speed_kmh": p["max_speed_kmh"]}
+
+
+def _gpx_points_in_window(start_dt, end_dt):
+    """[t_iso, lat, lon, speed_kmh] points from any GPX trip overlapping
+    [start_dt, end_dt) -- used to fill a clip's time window when it has no
+    video telemetry of its own. O(all GPX trips) per call: only used for the
+    handful of gap clips in one opened trip, never for the whole library."""
+    out = []
+    for s in list_gpx_trips():
+        gs, ge = _gpx_dt_naive(s.get("start")), _gpx_dt_naive(s.get("end"))
+        if not gs or not ge or ge < start_dt or gs > end_dt:
+            continue
+        try:
+            text = open(_gpx_path(s["id"]), encoding="utf-8", errors="replace").read()
+        except OSError:
+            continue
+        p = _parse_gpx(text)
+        for (lat, lon, spd), t in zip(p["points"], p["times"]):
+            pt = _gpx_dt_naive(t)
+            if pt and start_dt <= pt < end_dt:
+                out.append([pt.isoformat(), lat, lon, spd])
+    return out
+
+
+def _score_braking_run(run):
+    """run: contiguous video-sourced [t_iso, lat, lon, speed_kmh] points where
+    brake was on. Severity is the speed drop over the run's duration -- there
+    is no direct deceleration/G-force reading, only the brake on/off flag and
+    real speed samples, so this is an approximation. >~10 km/h/s roughly
+    matches the harsh-braking threshold (~0.3g) common fleet telematics use."""
+    t0 = datetime.datetime.fromisoformat(run[0][0])
+    t1 = datetime.datetime.fromisoformat(run[-1][0])
+    dt = (t1 - t0).total_seconds()
+    if dt <= 0:
+        return None
+    drop = (run[0][3] or 0) - (run[-1][3] or 0)
+    mid = run[len(run) // 2]
+    return {"t": mid[0], "lat": mid[1], "lon": mid[2],
+            "speed_drop_kmh": round(drop, 1), "duration_s": round(dt, 1),
+            "hard": (drop / dt) > 10.0}
+
+
+def _trip_route_full(trip):
+    """Merged route for one trip: real per-frame video telemetry (speed,
+    brake, autopilot, position) wherever a clip has it, falling back to GPX
+    points only for the clip windows that don't (locked/no_wrapped_key/not
+    yet extracted). Returns (points, event_markers, braking_events, stats);
+    points/braking_events are already decimated for rendering."""
+    by_id = {c["id"]: c for c in clips_cached()}
+    full = []  # [t_iso_or_None, lat, lon, speed_kmh, brake, autopilot_on, source]
+    event_markers = []
+    seen_event_folders = set()
+    for cid in trip["clip_ids"]:
+        c = by_id.get(cid)
+        if not c:
+            continue
+        try:
+            clip_start = datetime.datetime.strptime(c["timestamp"], "%Y-%m-%d_%H-%M-%S")
+        except ValueError:
+            continue
+        if c.get("has_tel"):
+            telp = cache_abspath(_telsr(c["folder"], c["timestamp"]))
+            try:
+                tel = json.load(open(telp, encoding="utf-8"))
+            except Exception:
+                tel = None
+            for f in (tel or {}).get("frames", []):
+                if f.get("lat") is None or f.get("lon") is None:
+                    continue
+                ts = (clip_start + datetime.timedelta(seconds=f["t"])).isoformat()
+                full.append([ts, f["lat"], f["lon"], f.get("speed_kmh"),
+                             bool(f.get("brake")), (f.get("autopilot") or 0) > 0, "video"])
+        else:
+            window_end = clip_start + datetime.timedelta(seconds=60)
+            for ts, lat, lon, spd in _gpx_points_in_window(clip_start, window_end):
+                full.append([ts, lat, lon, spd, None, None, "gpx"])
+        if c.get("has_event") and c.get("reason") and c["folder"] not in seen_event_folders:
+            seen_event_folders.add(c["folder"])
+            trigger = next((by_id[i] for i in trip["clip_ids"]
+                            if by_id.get(i) and by_id[i]["folder"] == c["folder"]
+                            and by_id[i].get("is_trigger")), c)
+            ev = _get_event_data(trigger["id"]) or {}
+            bounds = trigger.get("gps_bounds") or {}
+            lat = ev.get("lat") or bounds.get("center_lat")
+            lon = ev.get("lon") or bounds.get("center_lon")
+            if lat and lon:
+                event_markers.append({"lat": lat, "lon": lon,
+                                      "reason": ev.get("reason") or trigger.get("reason"),
+                                      "clip_id": trigger["id"]})
+    speeds = [p[3] for p in full if p[3] is not None]
+    ap_samples = [p[5] for p in full if p[5] is not None]
+    braking_events = []
+    run = []
+    for p in full:
+        if p[6] == "video" and p[4]:
+            run.append(p)
+            continue
+        if len(run) >= 2:
+            b = _score_braking_run(run)
+            if b:
+                braking_events.append(b)
+        run = []
+    if len(run) >= 2:
+        b = _score_braking_run(run)
+        if b:
+            braking_events.append(b)
+    stats = {
+        "avg_speed_kmh": round(sum(speeds) / len(speeds), 1) if speeds else None,
+        "max_speed_kmh": round(max(speeds), 1) if speeds else None,
+        "autopilot_pct": round(100 * sum(ap_samples) / len(ap_samples), 1) if ap_samples else None,
+        "braking_events": len(braking_events),
+        "hard_braking_events": sum(1 for b in braking_events if b["hard"]),
+        "gpx_gap_points": sum(1 for p in full if p[6] == "gpx"),
+        "point_count": len(full),
+    }
+    # Decimate for rendering only -- stats/events above already used full res.
+    step = max(1, len(full) // 600)
+    points = [[p[0], p[1], p[2], p[3]] for p in full[::step]]
+    return points, event_markers, braking_events, stats
+
+
+def trip_detail(trip_id):
+    trip = next((t for t in trips_cached() if t["id"] == trip_id), None)
+    if not trip:
+        return None
+    points, events, braking, stats = _trip_route_full(trip)
+    # stats already has a "braking_events" key (the count) -- braking_markers
+    # avoids colliding with it when spread into the same dict.
+    return {"id": trip["id"], "start": trip["start"], "end": trip["end"],
+            "distance_km": trip["distance_km"], "bounds": trip["bounds"],
+            "points": points, "events": events, "braking_markers": braking, **stats}
 
 
 # ---------- Media serving ----------
@@ -2315,6 +2492,11 @@ class H(BaseHTTPRequestHandler):
             st["dec_job"] = _dec_job
             st["fetch_job"] = _fetch_job
             st["delete_originals"] = DELETE
+            st["keep_telemetry_default"] = KEEP_TELEMETRY_ON_DELETE
+            # Reuses the analytics build (already stat's every camera file, and
+            # is itself cached/TTL'd) rather than re-summing sizes here -- this
+            # is polled every few seconds, analytics is not.
+            st["total_bytes"] = sum(f["bytes"] for f in analytics_cached()["storage"]["by_folder"])
             st["scan_job"] = _scan_job
             # False until the first scan has produced a list — lets the UI tell
             # "still indexing" apart from "genuinely no clips on the share"
@@ -2346,15 +2528,13 @@ class H(BaseHTTPRequestHandler):
         if path == "/api/purge/preview":
             spec = _purge_spec_from(parse_qs(urlparse(self.path).query))
             return self._send(200, purge_preview(spec))
-        if path == "/api/gpx_trips":
-            return self._send(200, {"enabled": bool(TRIPS_DIR), "trips": list_gpx_trips()})
-        if path == "/api/gpx":
-            g = gpx_track(self._qs("id"))
-            if g is None:
-                return self._send(404, {"error": "no such trip"})
-            return self._send(200, g)
         if path == "/api/trips":
             return self._send(200, trips_cached())
+        if path == "/api/trip_detail":
+            d = trip_detail(self._qs("id"))
+            if d is None:
+                return self._send(404, {"error": "no such trip"})
+            return self._send(200, d)
         if path == "/api/analytics":
             return self._send(200, analytics_cached())
         if path == "/api/pending.json":
@@ -2508,6 +2688,16 @@ if __name__ == "__main__":
     p.add_argument("--no-auto-decrypt", action="store_true")
     p.add_argument("--embed-key", action="store_true")
     p.add_argument("--no-direct-api", action="store_true")
+    p.add_argument("--no-auto-fetch-keys", action="store_true",
+                    help="Don't automatically fetch keys in the background when a new encrypted file without one is found")
+    p.add_argument("--no-auto-thumbnails", action="store_true",
+                    help="Don't automatically generate thumbnails in the background")
+    p.add_argument("--no-auto-telemetry", action="store_true",
+                    help="Don't automatically extract telemetry in the background")
+    p.add_argument("--auto-purge-days", type=int, default=0,
+                    help="Automatically delete driving clips (no event) older than this many days in the background. 0 disables it")
+    p.add_argument("--no-keep-telemetry-on-delete", action="store_true",
+                    help="Don't keep the GPS/speed telemetry sidecar when a video is deleted (manual or automatic purge)")
     p.add_argument("--debug", action="store_true", help="Verbose logging: request timing, scan/analytics duration, cache hit/miss counts")
     a = p.parse_args()
     SRC_DIR = os.path.abspath(a.src)
@@ -2532,6 +2722,11 @@ if __name__ == "__main__":
     AUTO_DECRYPT = not a.no_auto_decrypt
     EMBED_KEY = a.embed_key
     DIRECT_API = not a.no_direct_api
+    AUTO_FETCH_KEYS = not a.no_auto_fetch_keys
+    AUTO_THUMBNAILS = not a.no_auto_thumbnails
+    AUTO_TELEMETRY = not a.no_auto_telemetry
+    AUTO_PURGE_DAYS = max(0, a.auto_purge_days)
+    KEEP_TELEMETRY_ON_DELETE = not a.no_keep_telemetry_on_delete
     DEBUG = a.debug
     auth = TeslaAuth(os.path.join(DATA_DIR, "token_store.json"))
     os.makedirs(os.path.join(OUT_DIR, ".thumbs"), exist_ok=True)

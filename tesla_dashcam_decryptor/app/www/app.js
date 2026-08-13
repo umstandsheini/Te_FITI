@@ -162,9 +162,26 @@ function _tsMs(ts){
   const m=ts.match(/^(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})$/);
   return m?Date.UTC(+m[1],+m[2]-1,+m[3],+m[4],+m[5],+m[6]):null;
 }
-function _tsGapOk(a,b){ const x=_tsMs(a),y=_tsMs(b); return x!=null&&y!=null&&Math.abs(x-y)<=90000; }
+const SESSION_GAP_MS=90000;
+// Matches the server's TRIP_GAP_MIN (build_trips): once a trip filter has
+// already scoped the list to one drive, sub-splitting it further at every
+// >90s stop (traffic lights, brief parks) just fragments something the user
+// already asked to see as one thing. Widening the gap tolerance to the same
+// 20 minutes the trip itself was built from collapses it back to one group.
+const TRIP_SESSION_GAP_MS=20*60*1000;
+function _tsGapOk(a,b,maxMs=SESSION_GAP_MS){ const x=_tsMs(a),y=_tsMs(b); return x!=null&&y!=null&&Math.abs(x-y)<=maxMs; }
 let _expandedSessions=new Set();
-function clusterEvents(clips){
+// ignoreFolder: Tesla's Sentry pre-buffer writes a separate SentryClips file
+// for a minute RecentClips already has -- same timestamp, different folder.
+// Sorted by timestamp, a duplicate pair lands adjacent but in different
+// folders, which breaks the same-folder run on every single step and left
+// every clip in an otherwise-contiguous trip as its own ungrouped single.
+// Requiring same-folder normally still matters (it's what stops two
+// unrelated same-day sessions from merging outside a trip context), but
+// once a trip filter has already scoped the list to one drive, folder is
+// just a Tesla storage implementation detail, not a meaningful boundary --
+// so buildSidebar() passes true here specifically for that filtered view.
+function clusterEvents(clips,sessionGapMs=SESSION_GAP_MS,ignoreFolder=false){
   const out=[];
   let i=0;
   while(i<clips.length){
@@ -176,16 +193,16 @@ function clusterEvents(clips){
     }
     if(!c.has_event && c.folder){
       let j=i+1;
-      while(j<clips.length && clips[j].folder===c.folder && !clips[j].has_event
-            && _tsGapOk(clips[j-1].timestamp,clips[j].timestamp)) j++;
+      while(j<clips.length && (ignoreFolder||clips[j].folder===c.folder) && !clips[j].has_event
+            && _tsGapOk(clips[j-1].timestamp,clips[j].timestamp,sessionGapMs)) j++;
       if(j-i>1){ out.push({type:"session",clips:clips.slice(i,j)}); i=j; continue; }
     }
     out.push({type:"single",clip:c}); i++;
   }
   return out;
 }
-function appendClips(el,clips){
-  for(const item of clusterEvents(clips)){
+function appendClips(el,clips,sessionGapMs=SESSION_GAP_MS,ignoreFolder=false){
+  for(const item of clusterEvents(clips,sessionGapMs,ignoreFolder)){
     if(item.type==="single"){ el.appendChild(_clipRow(item.clip)); continue; }
     const isEvent=item.type==="event";
     // clips within a cluster are in list order (newest first); the oldest
@@ -242,6 +259,8 @@ function buildSidebar(){
   updateFilterChips(filtered.length);
   filtered.sort((a,b)=>b.timestamp.localeCompare(a.timestamp));
   const el=$("#cliplist"); el.innerHTML="";
+  const sessionGapMs=tripFilter?TRIP_SESSION_GAP_MS:SESSION_GAP_MS;
+  const ignoreFolder=!!tripFilter;
   const vehicles=new Set(filtered.map(c=>c.vehicle).filter(Boolean));
   if(vehicles.size>0){
     const groups={}; const ungrouped=[];
@@ -252,11 +271,11 @@ function buildSidebar(){
       head.innerHTML=`<span>${(_collapsed[v]?"▸ ":"▾ ")+v}</span><span class="cnt">${groups[v].length}</span>`;
       head.onclick=()=>{_collapsed[v]=!_collapsed[v];buildSidebar();};
       el.appendChild(head);
-      if(!_collapsed[v]) appendClips(el,groups[v]);
+      if(!_collapsed[v]) appendClips(el,groups[v],sessionGapMs,ignoreFolder);
     }
-    appendClips(el,ungrouped);
+    appendClips(el,ungrouped,sessionGapMs,ignoreFolder);
   } else {
-    appendClips(el,filtered);
+    appendClips(el,filtered,sessionGapMs,ignoreFolder);
   }
 }
 function markActive(id){ [...document.querySelectorAll(".cliprow")].forEach(r=>r.classList.toggle("active",r.dataset.id===id)); }
@@ -1541,6 +1560,15 @@ async function boot(){
       try{
         const s=await refreshStatus();
         pollMs=(s&&s.scan_job&&s.scan_job.running)?1500:5000;
+        // trips_cached() is itself async/non-blocking server-side -- on a
+        // large library the very first /api/trips call in loadTrips() above
+        // can land before the server has actually built anything and get an
+        // empty [] back. loadTrips() only ever runs once at boot otherwise,
+        // so tripsSorted (and with it the Map tab's trip card, and the
+        // Analytics trip detail picker) would then stay stuck empty for the
+        // rest of the session even once the server finishes. Keep retrying
+        // here until it actually has data, then stop.
+        if(!tripsSorted.length){ try{ await loadTrips(); }catch(e){} }
       }catch(e){}
       poll();
     },pollMs);

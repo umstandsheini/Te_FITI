@@ -2294,13 +2294,24 @@ def _trip_route_full(trip):
     yet extracted). Returns (points, event_markers, braking_events, stats);
     points/braking_events are already decimated for rendering."""
     by_id = {c["id"]: c for c in clips_cached()}
+    all_clips = [by_id[cid] for cid in trip["clip_ids"] if by_id.get(cid)]
+    # A real-world minute can appear twice in clip_ids: Tesla's Sentry
+    # pre-buffer duplicates whatever RecentClips already recorded for the
+    # few minutes leading into a trigger, as a separate file in a separate
+    # SentryClips folder -- same timestamp, different folder. The route only
+    # needs one representative per timestamp; without picking the telemetry-
+    # bearing one when there's a choice, a keyless/unextracted SentryClips
+    # duplicate would force a redundant GPX pull for a minute the RecentClips
+    # copy already covers with real data, double-counting points for it.
+    by_ts = {}
+    for c in all_clips:
+        cur = by_ts.get(c["timestamp"])
+        if cur is None or (not cur.get("has_tel") and c.get("has_tel")):
+            by_ts[c["timestamp"]] = c
+    route_clips = sorted(by_ts.values(), key=lambda c: c["timestamp"])
+
     full = []  # [t_iso_or_None, lat, lon, speed_kmh, brake, autopilot_on, source]
-    event_markers = []
-    seen_event_folders = set()
-    for cid in trip["clip_ids"]:
-        c = by_id.get(cid)
-        if not c:
-            continue
+    for c in route_clips:
         try:
             clip_start = datetime.datetime.strptime(c["timestamp"], "%Y-%m-%d_%H-%M-%S")
         except ValueError:
@@ -2321,11 +2332,18 @@ def _trip_route_full(trip):
             window_end = clip_start + datetime.timedelta(seconds=60)
             for ts, lat, lon, spd in _gpx_points_in_window(clip_start, window_end):
                 full.append([ts, lat, lon, spd, None, None, "gpx"])
+
+    # Events, unlike the route, must still check every original clip (not
+    # the deduplicated route_clips): has_event/reason live on whichever
+    # specific folder the event actually landed in, and that's often the
+    # SentryClips duplicate the route step above just skipped over.
+    event_markers = []
+    seen_event_folders = set()
+    for c in all_clips:
         if c.get("has_event") and c.get("reason") and c["folder"] not in seen_event_folders:
             seen_event_folders.add(c["folder"])
-            trigger = next((by_id[i] for i in trip["clip_ids"]
-                            if by_id.get(i) and by_id[i]["folder"] == c["folder"]
-                            and by_id[i].get("is_trigger")), c)
+            trigger = next((x for x in all_clips
+                            if x["folder"] == c["folder"] and x.get("is_trigger")), c)
             ev = _get_event_data(trigger["id"]) or {}
             bounds = trigger.get("gps_bounds") or {}
             lat = ev.get("lat") or bounds.get("center_lat")

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.44
+- **Fix: a trip's "View clips" filter showed dozens of ungrouped/duplicated-looking rows instead of one clean group.** Root cause was two-fold: (1) the clip list's loop-recording grouping only tolerated 90s gaps, so a trip's own longer stops (traffic lights, brief parks) fragmented it into several small groups even though the trip itself already spans up to 20 minutes of gap; (2) Tesla's Sentry pre-buffer writes a separate `SentryClips` file for the last few minutes before a trigger that `RecentClips` *also* already has — same timestamp, different folder, and consecutive-same-folder grouping broke on every single one of these alternating pairs. A trip-filtered view now groups by gap alone (folder-agnostic) with the wider trip-scale tolerance, collapsing what were ~15 fragments into one row
+- **Fix: the trip detail viewer double-counted GPX fallback points for the same duplicated minutes.** The same `RecentClips`/`SentryClips` duplication above meant a minute with no telemetry on *either* copy pulled GPX substitute points twice. The route now dedupes by timestamp before deciding source, preferring whichever duplicate actually has video telemetry — event detection still checks every original clip, so an event landing on the `SentryClips` duplicate specifically is never lost just because the route step picked the other one
+- **Fix: the trip picker (both the Map tab's trip card and the new Analytics trip detail viewer) could stay permanently empty for the whole session.** `loadTrips()` only ever ran once at boot; on a large library the very first `/api/trips` call can land before the server has finished building trips and gets `[]` back, and nothing ever retried. The background status poll now retries `loadTrips()` every tick until it actually gets data
+
 ## 0.7.43
 - **"View clips" button in the Analytics trip detail viewer.** Selecting a trip and clicking it filters the clip list to exactly that trip's clips and jumps to the Clips tab — the same filter the Map tab's trip card already offers, now available from Analytics too
 

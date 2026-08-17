@@ -171,16 +171,19 @@ const SESSION_GAP_MS=90000;
 const TRIP_SESSION_GAP_MS=20*60*1000;
 function _tsGapOk(a,b,maxMs=SESSION_GAP_MS){ const x=_tsMs(a),y=_tsMs(b); return x!=null&&y!=null&&Math.abs(x-y)<=maxMs; }
 let _expandedSessions=new Set();
-// ignoreFolder: Tesla's Sentry pre-buffer writes a separate SentryClips file
-// for a minute RecentClips already has -- same timestamp, different folder.
-// Sorted by timestamp, a duplicate pair lands adjacent but in different
-// folders, which breaks the same-folder run on every single step and left
-// every clip in an otherwise-contiguous trip as its own ungrouped single.
-// Requiring same-folder normally still matters (it's what stops two
-// unrelated same-day sessions from merging outside a trip context), but
-// once a trip filter has already scoped the list to one drive, folder is
-// just a Tesla storage implementation detail, not a meaningful boundary --
-// so buildSidebar() passes true here specifically for that filtered view.
+// Tesla's Sentry pre-buffer writes a separate SentryClips file for a minute
+// RecentClips already has -- same timestamp, different folder. Sorted by
+// timestamp, a duplicate pair lands adjacent but in different folders,
+// which broke the same-folder run on every single step and left every clip
+// in an otherwise-contiguous stretch as its own ungrouped single -- not
+// just inside a trip filter, this happens anywhere a Sentry event's
+// pre-buffer overlaps RecentClips, i.e. constantly. Two clips sharing the
+// exact same timestamp are unconditionally the same moment, so that always
+// bridges the run regardless of folder or session-gap tolerance.
+// ignoreFolder is a second, narrower relaxation used only once a trip
+// filter has already scoped the list to one drive: outside that context,
+// same-folder still matters (it's what stops two unrelated same-day
+// sessions merging), but inside it, folder is just a Tesla storage detail.
 function clusterEvents(clips,sessionGapMs=SESSION_GAP_MS,ignoreFolder=false){
   const out=[];
   let i=0;
@@ -193,8 +196,11 @@ function clusterEvents(clips,sessionGapMs=SESSION_GAP_MS,ignoreFolder=false){
     }
     if(!c.has_event && c.folder){
       let j=i+1;
-      while(j<clips.length && (ignoreFolder||clips[j].folder===c.folder) && !clips[j].has_event
-            && _tsGapOk(clips[j-1].timestamp,clips[j].timestamp,sessionGapMs)) j++;
+      while(j<clips.length && !clips[j].has_event && (
+              clips[j].timestamp===clips[j-1].timestamp ||
+              ((ignoreFolder||clips[j].folder===c.folder)
+               && _tsGapOk(clips[j-1].timestamp,clips[j].timestamp,sessionGapMs))
+            )) j++;
       if(j-i>1){ out.push({type:"session",clips:clips.slice(i,j)}); i=j; continue; }
     }
     out.push({type:"single",clip:c}); i++;

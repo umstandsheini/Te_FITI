@@ -57,6 +57,9 @@ pure local viewer without any Tesla account interaction at all.
 - **GPS map** — live track from telemetry or single-point from event.json
 - **"Nerd info" panel** — raw telemetry values + event metadata
   (trigger reason, location, camera)
+- **Player display toggles** — HUD, Nerd info and the in-player map are each
+  an independent checkbox above the video; show or hide whichever you want,
+  per session
 - **Clip browser** — searchable, filterable by driving telemetry / event.
   If your `clips_subpath` contains vehicle folders (e.g. `Tesla1`,
   `Tesla2`), clips are automatically grouped per vehicle. Switch between a
@@ -73,10 +76,17 @@ pure local viewer without any Tesla account interaction at all.
 - **Per-camera fullscreen** — each video tile has a fullscreen button
 - **Thumbnail grid** — auto-generated or from Tesla's thumb.png
 - **Per-camera download** and full-clip ZIP export
+- **📌 Keep** — protect the open clip from the storage cleanup below, from
+  inside the player
+- **💾 Save permanently** — decrypt just the currently open clip and write it
+  to `dec_subpath` right away, without waiting for a batch job
 - **Batch operations** — bulk key fetch, "Decrypt everything" (with a progress
   bar and a cancel button; deletes the encrypted originals afterwards if
   `delete_originals` is on, after confirming), bulk telemetry extraction, bulk
-  thumbnail generation
+  thumbnail generation, one-off removal of encrypted originals left over from
+  clips that were already decrypted before `delete_originals` was turned on,
+  and a telemetry re-sync for clips extracted before a frame-timing fix (the
+  HUD could lag the video by up to 18s on those)
 - **Free up storage** — delete clips by category (no-event / a specific event
   reason / all, optionally only older than N days) to reclaim space, with a
   preview and confirmation. Mark clips you want to keep with 📌 in the player;
@@ -119,7 +129,7 @@ In the clip browser, encrypted clips are marked with a lock icon:
 
 1. **Settings → Add-ons → Add-on Store**
 2. Top right **⋮ → Repositories**
-3. Add: `https://github.com/bernd780/Te_FITI`
+3. Add: `https://github.com/umstandsheini/Te_FITI`
 4. Reload the store → install **Te_FITI**
 
 ## Configuration

@@ -8,13 +8,41 @@ Phase separation:
 Reading headers (8 KB) over SMB costs ~140 ms/file -> done in parallel. Selecting
 which files need a key/decrypt at all is done via stat (no header read).
 """
-import os, glob, struct, base64
+import os, glob, struct, base64, json
 from concurrent.futures import ThreadPoolExecutor
 
 MAGIC = 0x3C81B7F5
 HEADER_SIZE = 8192
 MEDIA_EXT = (".mp4",)
 SCAN_WORKERS = 16
+
+# An external tool paired to the same NAS (e.g. a "hub" device that already
+# talked to Tesla itself) can drop the unwrapped FEK for a clip as a sidecar
+# file next to it: "<video>.mp4.rawkey.json". If one exists, its key is used
+# directly -- Tesla is never asked for a clip whose key already sits on disk.
+SIDECAR_SUFFIX = ".rawkey.json"
+
+
+def sidecar_path(sr: str) -> str:
+    """Tree-relative path (same format as clip_id) of the rawkey sidecar
+    that would sit next to this camera file, if one exists."""
+    return sr + SIDECAR_SUFFIX
+
+
+def read_sidecar_fek(abspath: str):
+    """Read a <video>.mp4.rawkey.json sidecar and return its base64 FEK, or
+    None if the file is missing, unreadable, or doesn't carry a plausible
+    AES-128 key (16 raw bytes). Only ever reads a file already on the NAS --
+    no network contact."""
+    try:
+        with open(abspath, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        fek_b64 = d.get("fek_b64")
+        if not fek_b64 or len(base64.b64decode(fek_b64)) != 16:
+            return None
+        return fek_b64
+    except Exception:
+        return None
 
 
 def is_ecryptfs(head: bytes) -> bool:

@@ -628,6 +628,11 @@ def _scan_locked(keys=None):
         enc_misses = _classify_new([(sr, m) for sr, m in mp4s if sr not in orphans])
         t_enc = time.time()
 
+        # Cheap (set lookups against the walk already done above): pick up any
+        # key an external hub already dropped on the NAS before deciding a file
+        # is "locked" -- see _import_sidecar_keys.
+        _import_sidecar_keys(mp4s, keys, src_files)
+
         clips = {}
         for i, (sr, m) in enumerate(mp4s):
             ts, cam = m.group(1), m.group(2).lower()
@@ -672,6 +677,38 @@ def _scan_locked(keys=None):
         return out
     finally:
         _scan_job.update({"running": False, "phase": "", "took": time.time() - t0})
+
+
+def _import_sidecar_keys(mp4s, keys, src_files):
+    """A companion tool paired to the same NAS can already have unwrapped a
+    clip's FEK and dropped it as a <video>.mp4.rawkey.json sidecar next to
+    the encrypted file (see keybridge.read_sidecar_fek). If one exists for a
+    file we don't have a key for yet, import it into the keystore -- once
+    stored there it's permanent (keystore.py never deletes), so the clip
+    decrypts locally from here on and Tesla is never asked for it. src_files
+    already lists every filename this scan's directory walk saw, so checking
+    for the sidecar is a set lookup, not a NAS round trip; only files that
+    pass that check are actually opened."""
+    found = {}
+    for sr, _m in mp4s:
+        if sr in keys or enc_id(sr) in keys:
+            continue
+        if not _is_encrypted(src_abspath(sr), sr):
+            continue
+        if keybridge.sidecar_path(sr) not in src_files:
+            continue
+        fek_b64 = keybridge.read_sidecar_fek(src_abspath(keybridge.sidecar_path(sr)))
+        if fek_b64:
+            found[sr] = fek_b64
+    if found:
+        n = keystore.merge(KEYS_FILE, found)
+        if n:
+            keys.update(found)
+            print(f"[keys] imported {n} key(s) from local .rawkey.json sidecar(s) "
+                  f"-- no Tesla contact needed", flush=True)
+            if AUTO_DECRYPT:
+                bg(run_cycle, do_fetch=False, do_decrypt=True)
+    return found
 
 
 def _new_locked_srs(data):
@@ -1077,6 +1114,22 @@ def _key_for(sr, keys):
         return base64.b64decode(keys[eid])
     return None
 
+def _import_sidecar_key(sr, keys):
+    """Single-file fallback of _import_sidecar_keys(), used when opening one
+    clip on demand -- so a sidecar the hub dropped moments ago doesn't have
+    to wait for the next full scan before the clip becomes readable."""
+    if sr in keys or enc_id(sr) in keys:
+        return
+    side_abs = src_abspath(keybridge.sidecar_path(sr))
+    if not os.path.exists(side_abs):
+        return
+    fek_b64 = keybridge.read_sidecar_fek(side_abs)
+    if fek_b64 and keystore.merge(KEYS_FILE, {sr: fek_b64}):
+        keys[sr] = fek_b64
+        print(f"[keys] imported local .rawkey.json sidecar for {sr} "
+              f"-- no Tesla contact needed", flush=True)
+
+
 def _decrypt_cam(sr, keys, delete_original=False):
     fek = _key_for(sr, keys)
     if not fek:
@@ -1106,6 +1159,8 @@ def prepare_clip(cid):
     jobs = []
     for cam, sr in cams.items():
         if _is_encrypted(src_abspath(sr), sr):
+            if not os.path.exists(cache_abspath(sr)) and not _key_for(sr, keys):
+                _import_sidecar_key(sr, keys)
             if not os.path.exists(cache_abspath(sr)) and _key_for(sr, keys):
                 jobs.append(("dec", sr))
         elif cam == "front":
@@ -2399,6 +2454,11 @@ def trip_detail(trip_id):
 # ---------- Media serving ----------
 def resolve_media(sr):
     sr = _norm(sr)
+    # Key material must never be served: the key store (.teslacam_keys.json,
+    # a dotfile) and the per-clip key sidecars sit inside the scanned tree.
+    if any(p.startswith(".") for p in sr.split("/")) \
+            or sr.lower().endswith((".rawkey.json", ".key.json")):
+        return None
     cp = cache_abspath(sr)
     if cp.startswith(os.path.normpath(OUT_DIR)) and os.path.isfile(cp):
         return cp

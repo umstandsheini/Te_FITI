@@ -121,9 +121,31 @@ Once fetched, FEKs are stored persistently next to the encrypted files on
 your NAS (`.teslacam_keys.json`). From that point on, decryption is **fully
 local and offline** — no further contact with Tesla is needed.
 
+**Third way — a key another tool already unwrapped:** if a separate tool
+paired to the same NAS drops a `<video>.mp4.rawkey.json` sidecar next to an
+encrypted clip (its own already-unwrapped FEK, base64-encoded), Te_FITI picks
+it up on the next scan — or immediately when you open that clip — and adds it
+to its own key store permanently. That clip is never sent to Tesla for a key
+it already has sitting on the NAS.
+
 In the clip browser, encrypted clips are marked with a lock icon:
 🔒 (green) = key available, ready to decrypt;
 🔒 (grey) = no key yet, needs to be fetched first.
+
+## Known limitations
+
+- **Encrypted Sentry/Saved clips carry no event data (no trigger reason, no
+  📅/🎯 badge).** In an encrypted folder Tesla writes `event.json` (and
+  `thumb.png`) eCryptfs-wrapped like the videos — but, unlike the videos,
+  with an *empty* wrapped-key section, so there is no key to fetch from
+  Tesla. The files are present on the NAS (also when mirrored into the
+  decrypted tree by an external hub); their content is just unreadable
+  ciphertext. Checked 2026-09-18: 216 of 216 encrypted event folders
+  affected, and none of the 12,474 keys in the store opens one. Plain
+  (unencrypted) event clips are unaffected. Te_FITI cannot recover the
+  reason/timestamp from these files; the event *moment* is still visible in
+  the recording itself. Tesla vehicle software at the time: `2026.26.6.1`.
+  Details in the `te_usbhub` project's `EVENT_JSON_ENCRYPTED_CLIPS_ISSUE.md`.
 
 ## Installation
 

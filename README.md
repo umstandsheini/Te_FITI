@@ -1,14 +1,32 @@
-# Te_FITI – Tesla Fleet Integration, Telemetry & Infotainment
+# Te_FITI – Tesla Dashcam & Sentry Mode viewer for Home Assistant
 
-Home Assistant add-on repository.
-
-**Te_FITI** is a multi-camera dashcam viewer that plays Tesla Dashcam and
-Sentry clips from your NAS with a live telemetry HUD, GPS map and event
-metadata. It can optionally decrypt encrypted clips (firmware 2026.20+) —
-this requires a one-time login to your Tesla account to fetch the encryption
-keys; after that, everything runs fully local and offline.
+**Te_FITI** is a Home Assistant add-on that plays **Tesla Dashcam and Sentry Mode
+clips** straight from your NAS: six-camera playback, a live **telemetry HUD**
+(speed, gear, steering, brake, blinkers, Autopilot), a **GPS map**, trip
+analysis and event metadata. It can **decrypt encrypted Tesla clips**
+(firmware 2026.20+, `EncryptedClips`, eCryptfs) with a one-time Tesla login;
+after that everything runs locally and offline.
 
 ![Te_FITI Screenshot](docs/screenshot.png)
+
+## What it does
+
+- **View Tesla dashcam / Sentry footage from a NAS** (SMB share) in Home
+  Assistant, all cameras synchronised, with per-camera fullscreen and download
+- **Decrypt encrypted Tesla dashcam clips** (2026.20 and later): keys fetched
+  once, stored locally, decrypted offline; single clip, batch or automatic
+- **Telemetry HUD** extracted from the video itself (H.264 SEI): speed, gear,
+  steering wheel, accelerator, brake, indicators, Autopilot
+- **Trips and analytics**: drives grouped from clips, speed-coloured route map,
+  speed chart, average and top speed, Autopilot share, braking events
+- **Event browser**: Sentry and saved events by reason (honk, object detection,
+  accelerometer, emergency braking), map area filter, event-moment marker
+- **Storage tools**: free up space by category and age, keep telemetry when
+  deleting videos, protect clips you want to keep
+- **Privacy**: no cloud, no upload; the only Tesla contact is the one-time key fetch
+
+Full feature list, configuration and all options:
+[add-on documentation](tesla_dashcam_decryptor/README.md).
 
 ## Installation
 
@@ -17,4 +35,25 @@ keys; after that, everything runs fully local and offline.
 3. Add this URL: `https://github.com/umstandsheini/Te_FITI`
 4. Reload the store → install **Te_FITI**
 
-See [tesla_dashcam_decryptor/README.md](tesla_dashcam_decryptor/README.md) for full documentation.
+## Findings about Tesla dashcam files
+
+Things learned by reverse-engineering real footage, written up separately:
+[Tesla dashcam findings](docs/TESLA-DASHCAM-FINDINGS.md)
+
+- Encrypted clip format (header layout, per-page IV, wrapped key section)
+- Why `event.json` and `thumb.png` in `EncryptedClips` cannot be read
+- Sentry pre-buffer duplicates the same minutes in `RecentClips` and `SentryClips`
+- How telemetry is embedded in the video, and how patchy it is
+
+## Deutsch
+
+Home-Assistant-Add-on zum Ansehen, Entschlüsseln und Auswerten von **Tesla
+Dashcam- und Wächter-Modus-Videos** (Sentry) vom NAS, mit Telemetrie-HUD,
+GPS-Karte und Fahrten-Analyse. Unterstützt die seit **Tesla-Software 2026.20**
+verschlüsselten Aufnahmen (`EncryptedClips`): einmal anmelden, danach lokal.
+
+## Keywords
+
+Tesla dashcam viewer, Tesla Sentry Mode viewer, TeslaCam, decrypt Tesla
+dashcam 2026.20, EncryptedClips, eCryptfs, Home Assistant add-on, NAS,
+teslausb, dashcam telemetry HUD, SEI telemetry, Tesla dashcam GPS map.

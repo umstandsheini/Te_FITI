@@ -7,6 +7,8 @@ analysis and event metadata. It can **decrypt encrypted Tesla clips**
 (firmware 2026.20+, `EncryptedClips`, eCryptfs) with a one-time Tesla login;
 after that everything runs locally and offline.
 
+> **Companion capture side:** [te_camhub](https://github.com/umstandsheini/te_camhub) (a teslausb fork) runs on a Raspberry Pi **in the car**: it emulates the USB drive, archives the clips to the NAS Te_FITI reads, and can place each clip's decryption key next to it there (sealed `*.key.json`, or raw `*.rawkey.json`) so Te_FITI decrypts without its own Tesla login. Hub = capture & archive in the car; Te_FITI = decrypt & view at home.
+
 ![Te_FITI Screenshot](docs/screenshot.png)
 
 ## What it does
@@ -35,46 +37,10 @@ Full feature list, configuration and all options:
 3. Add this URL: `https://github.com/umstandsheini/Te_FITI`
 4. Reload the store → install **Te_FITI**
 
-## Works with te_camhub
-
-Te_FITI pairs with [**te_camhub**](https://github.com/umstandsheini/te_camhub), a
-self-hosted Tesla dashcam hub for the Raspberry Pi (a
-[teslausb](https://github.com/marcone/teslausb) fork). They are two halves of
-one setup, and each also works on its own.
-
-```
-Tesla (USB dashcam drive)
-   └─ te_camhub on a Raspberry Pi in the car: snapshots, archives, syncs to your NAS
-         └─ NAS share (SMB): TeslaCam/…, decrypted/, Fahrten/*.gpx
-               └─ Te_FITI (Home Assistant add-on): mounts the same share, views and analyses
-```
-
-| | te_camhub | Te_FITI |
-|---|---|---|
-| Runs on | Raspberry Pi in the car | Home Assistant |
-| Job | Record, archive and sync clips to the NAS, record GPX drive tracks, hold keys | Browse, decrypt, play, analyse |
-| Talks to | The car (USB), your NAS | Your NAS only |
-
-What flows between them, all through the NAS share:
-
-- **Clips.** te_camhub archives `TeslaCam/…` (including `EncryptedClips`);
-  Te_FITI reads the same tree in place and writes decrypted copies, thumbnails
-  and telemetry to its own `decrypted/` folder.
-- **Drive tracks.** te_camhub syncs per-drive `.gpx` files to a `Fahrten`
-  folder (`trips_subpath`). Te_FITI uses them only for stretches with no video
-  telemetry.
-- **Keys.** If te_camhub already holds a clip's key it can place it next to the
-  video as `<video>.mp4.rawkey.json`. Te_FITI imports it, so Tesla is not asked
-  for a key that is already on the NAS.
-- **Event data.** For encrypted Sentry/Saved folders neither project can read
-  `event.json`; see the [findings](docs/TESLA-DASHCAM-FINDINGS.md).
-
 ## Findings about Tesla dashcam files
 
 Things learned by reverse-engineering real footage, written up separately:
-[Tesla dashcam findings](docs/TESLA-DASHCAM-FINDINGS.md). The hub side of the
-same story is in
-[te_camhub: how Tesla encrypts dashcam clips](https://github.com/umstandsheini/te_camhub/blob/main/doc/tesla-dashcam-encryption.md).
+[Tesla dashcam findings](docs/TESLA-DASHCAM-FINDINGS.md)
 
 - Encrypted clip format (header layout, per-page IV, wrapped key section)
 - Why `event.json` and `thumb.png` in `EncryptedClips` cannot be read

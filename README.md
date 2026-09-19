@@ -45,13 +45,6 @@ Things learned by reverse-engineering real footage, written up separately:
 - Sentry pre-buffer duplicates the same minutes in `RecentClips` and `SentryClips`
 - How telemetry is embedded in the video, and how patchy it is
 
-## Deutsch
-
-Home-Assistant-Add-on zum Ansehen, Entschlüsseln und Auswerten von **Tesla
-Dashcam- und Wächter-Modus-Videos** (Sentry) vom NAS, mit Telemetrie-HUD,
-GPS-Karte und Fahrten-Analyse. Unterstützt die seit **Tesla-Software 2026.20**
-verschlüsselten Aufnahmen (`EncryptedClips`): einmal anmelden, danach lokal.
-
 ## Keywords
 
 Tesla dashcam viewer, Tesla Sentry Mode viewer, TeslaCam, decrypt Tesla

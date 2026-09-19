@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.7.47
+- **The interface is English throughout.** The last German string, the Keys panel heading "Direkt-API (automatisch)", is now "Direct API (automatic)". The `trips_subpath` default `Fahrten` is unchanged because it names the folder an existing companion recorder writes to
+
 ## 0.7.46
 - **A key an external tool already unwrapped is now used directly, without asking Tesla again.** If a companion tool paired to the same NAS drops a `<video>.mp4.rawkey.json` sidecar next to an encrypted clip (its already-unwrapped FEK, base64-encoded), Te_FITI picks it up during the next scan — or immediately when you open that clip — and stores it permanently in its own key store, exactly as if it had fetched it from Tesla itself. From then on the clip decrypts fully locally like any other keyed clip (on-demand, or via the batch "Decrypt everything"/auto-decrypt paths); Tesla is never contacted for a key that's already sitting on disk. A malformed or wrong-length sidecar is ignored rather than trusted
 - **Security: `/media/` no longer serves key material.** The key store (`.teslacam_keys.json`) and the per-clip `.rawkey.json` / `.key.json` sidecars sit inside the scanned tree and were reachable through the media endpoint (`/media/.teslacam_keys.json` returned the whole store). Any dotfile or key sidecar now answers 404

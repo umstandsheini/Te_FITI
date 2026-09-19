@@ -108,6 +108,8 @@ turn signals, Autopilot state, latitude, longitude and heading.
 
 ## Related
 
+- [te_camhub findings](https://github.com/umstandsheini/te_camhub/blob/main/doc/tesla-dashcam-encryption.md): the same topic from the Raspberry Pi hub side
+- [te_camhub](https://github.com/umstandsheini/te_camhub): the companion hub that archives clips to the NAS
 - [Te_FITI README](../README.md): features, installation, configuration
 - [Add-on documentation](../tesla_dashcam_decryptor/README.md)
 - [Changelog](../tesla_dashcam_decryptor/CHANGELOG.md)

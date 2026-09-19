@@ -39,7 +39,7 @@ pure local viewer without any Tesla account interaction at all.
   visible at a glance, plus a speed-over-time chart, event markers, and
   average/top speed + Autopilot-use + braking-event stats. "View clips" jumps
   to the Clips tab filtered to that trip. If a companion recorder (e.g.
-  te_usbhub) syncs per-drive GPX tracks into a `Fahrten` folder, those fill in
+  te_camhub) syncs per-drive GPX tracks into a `Fahrten` folder, those fill in
   only the stretches with no video telemetry of their own (an undecryptable
   clip, or one not extracted yet) — GPX is a fallback source, never the
   primary one, and the viewer works fine without it
@@ -132,6 +132,20 @@ In the clip browser, encrypted clips are marked with a lock icon:
 🔒 (green) = key available, ready to decrypt;
 🔒 (grey) = no key yet, needs to be fetched first.
 
+## Works with te_camhub
+
+[te_camhub](https://github.com/umstandsheini/te_camhub) is the companion project:
+a Raspberry Pi in the car (a teslausb fork) that archives your dashcam clips to
+the NAS. Te_FITI mounts that same NAS share and does the viewing, decrypting and
+analysis in Home Assistant. Neither needs the other.
+
+- **Clips:** te_camhub archives `TeslaCam/…`; Te_FITI reads it in place.
+- **Drive tracks:** te_camhub's GPX files in `Fahrten` (`trips_subpath`) fill
+  stretches without video telemetry.
+- **Keys:** a `<video>.mp4.rawkey.json` placed next to a clip by te_camhub is
+  imported, so Tesla is not asked again.
+- Overview and diagram: [repository README](../README.md#works-with-te_camhub).
+
 ## Known limitations
 
 - **Encrypted Sentry/Saved clips carry no event data (no trigger reason, no
@@ -145,7 +159,9 @@ In the clip browser, encrypted clips are marked with a lock icon:
   (unencrypted) event clips are unaffected. Te_FITI cannot recover the
   reason/timestamp from these files; the event *moment* is still visible in
   the recording itself. Tesla vehicle software at the time: `2026.26.6.1`.
-  Details in the `te_usbhub` project's `EVENT_JSON_ENCRYPTED_CLIPS_ISSUE.md`.
+  Details in the [findings](../docs/TESLA-DASHCAM-FINDINGS.md) and in
+  [te_camhub](https://github.com/umstandsheini/te_camhub/blob/main/doc/tesla-dashcam-encryption.md),
+  which describes them as encrypted with the console key `_CONSOLE`.
 
 ## Installation
 
@@ -197,7 +213,7 @@ does not, these options do nothing.
 | `key_after_decrypt` | `hidden` | `hidden` keeps keys in the key store only. `embed` also writes the key into an ignored `uuid` box inside the decrypted MP4, so the file stays decryptable on its own — convenient, but anyone with the file then has its key. |
 | `dec_subpath` | `decrypted` | Folder inside the share for decrypted clips, thumbnails and extracted telemetry. |
 | `broken_subpath` | `broken` | Folder inside the share for clips that are encrypted but contain no key of their own, moved there by the "Move undecryptable clips aside" button. Must sit outside `clips_subpath`. Nothing is deleted — moving the folder back restores them. A separate "Delete permanently" button is always available for the same files (even without `broken_subpath` configured) and, unlike the move button, cannot be undone. |
-| `trips_subpath` | `Fahrten` | Folder at the share root where a companion recorder (e.g. te_usbhub) syncs per-drive `.gpx` tracks. The trip detail viewer in Analytics works without this — it uses dashcam video telemetry as its primary source — but when this is set, GPX fills the gaps where no video telemetry exists (undecryptable/not-yet-extracted clips). Read-only — Te_FITI never writes here. |
+| `trips_subpath` | `Fahrten` | Folder at the share root where a companion recorder (e.g. [te_camhub](https://github.com/umstandsheini/te_camhub)) syncs per-drive `.gpx` tracks. The trip detail viewer in Analytics works without this — it uses dashcam video telemetry as its primary source — but when this is set, GPX fills the gaps where no video telemetry exists (undecryptable/not-yet-extracted clips). Read-only — Te_FITI never writes here. |
 | `enc_subpath` | *(empty)* | Legacy. Encrypted files are detected by their eCryptfs header wherever they are, so leave this empty unless you deliberately keep them in a separate folder. |
 
 ### Automatic background processing
